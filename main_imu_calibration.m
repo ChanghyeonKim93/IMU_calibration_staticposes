@@ -20,8 +20,8 @@ T_wait = 2;    % T_wait (refered in the paper), [s];
 T_init = 4;      % T_init (refered in the paper), [s];
 
 % Import file ( All data must have a column vector form. )
-% data = importdata('imu.txt');
-data = importdata('../../save_exp/imu.txt');
+data = importdata('imu_good3.txt');
+% data = importdata('../../save_exp/imu.txt');
 
 data.data(1,:) = [];
 
@@ -43,13 +43,15 @@ fprintf('time mean : %0.3f [ms], std : %0.3f [ms]\n',mean(t_imu(2:end)-t_imu(1:e
 
 %% (1) Gyro bias correction
 num_avg = floor(T_init*freq);
-b_g = [mean(w_imu(1,1:num_avg)),mean(w_imu(2,1:num_avg)),mean(w_imu(3,1:num_avg))].';
-fprintf('Gyro bias b_g : %0.3f [rad/s], %0.3f [rad/s], %0.3f [rad/s]\n',b_g(1), b_g(2), b_g(3));
+bias_g = [mean(w_imu(1,1:num_avg)),mean(w_imu(2,1:num_avg)),mean(w_imu(3,1:num_avg))].';
+
+w_unbiased = w_imu-bias_g;
+fprintf('Gyro bias b_g : %0.3f [rad/s], %0.3f [rad/s], %0.3f [rad/s]\n',bias_g(1), bias_g(2), bias_g(3));
 
 figure();
-subplot(3,1,1); plot(t_imu, w_imu(1,:)-b_g(1,1)); hold on; line([1,1]*T_init,[-1,1]*100,'color',[1,0,1],'linewidth',1.5); ylabel('w_x [rad/s]'); ylim([-1,1]*5); legend('data','T_i_n_i_t'); title('Gyro bias corrected');
-subplot(3,1,2); plot(t_imu, w_imu(2,:)-b_g(2,1)); hold on; line([1,1]*T_init,[-1,1]*100,'color',[1,0,1],'linewidth',1.5);ylabel('w_y [rad/s]'); ylim([-1,1]*5);
-subplot(3,1,3); plot(t_imu, w_imu(3,:)-b_g(3,1)); hold on; line([1,1]*T_init,[-1,1]*100,'color',[1,0,1],'linewidth',1.5);ylabel('w_z [rad/s]'); xlabel('time [s]'); ylim([-1,1]*5);
+subplot(3,1,1); plot(t_imu, w_unbiased(1,:)); hold on; line([1,1]*T_init,[-1,1]*100,'color',[1,0,1],'linewidth',1.5); ylabel('w_x [rad/s]'); ylim([-1,1]*5); legend('data','T_i_n_i_t'); title('Gyro bias corrected');
+subplot(3,1,2); plot(t_imu, w_unbiased(2,:)); hold on; line([1,1]*T_init,[-1,1]*100,'color',[1,0,1],'linewidth',1.5);ylabel('w_y [rad/s]'); ylim([-1,1]*5);
+subplot(3,1,3); plot(t_imu, w_unbiased(3,:)); hold on; line([1,1]*T_init,[-1,1]*100,'color',[1,0,1],'linewidth',1.5);ylabel('w_z [rad/s]'); xlabel('time [s]'); ylim([-1,1]*5);
 
 %% (2) Find distinct stationary stages by using Allan variance of acceleration.
 num_allan_half = floor(T_wait*freq/2);
@@ -93,9 +95,8 @@ end
 rising_flag  = false;
 count_stage    = 1;      % indicator for noting an each stage.
 allan_thres  = 0.1;    % threshold value for Allan variance.
-stage_start  = [];     % storage for saving the start index of each stage.
-stage_end    = [];     % storage for saving the end index of each stage.
-
+transit_start  = [];     % storage for saving the start index of each stage.
+transit_end    = [];     % storage for saving the end index of each stage.
 stage_vec = zeros(len_total,1);
 
 for i=1:len_total
@@ -103,11 +104,11 @@ for i=1:len_total
     if(rising_flag == false && allan_tmp >= allan_thres)
         rising_flag = true;
         count_stage = count_stage + 1;
-        stage_start = [stage_start, i];
+        transit_start = [transit_start, i];
     end
     if(rising_flag == true && allan_tmp < allan_thres) %transition part end
         rising_flag = false;
-        stage_end   = [stage_end, i];
+        transit_end   = [transit_end, i];
     end
     if(rising_flag == true)
         stage_vec(i)= count_stage - 0.5;
@@ -118,16 +119,16 @@ end
 figure();
 plot(t_imu,stage_vec,'k+');ylim([0,max(stage_vec)+1]);
 hold on;
-line([t_imu(stage_start);t_imu(stage_start)],repmat([0;1]*1e3,1,length(stage_start)),'Color',[1,0,1],'linewidth',1.0);
-line([t_imu(stage_end);t_imu(stage_end)],repmat([0;1]*1e3,1,length(stage_end)),'Color',[0,0,1],'linewidth',1.0);
+line([t_imu(transit_start);t_imu(transit_start)],repmat([0;1]*1e3,1,length(transit_start)),'Color',[1,0,1],'linewidth',1.0);
+line([t_imu(transit_end);t_imu(transit_end)],repmat([0;1]*1e3,1,length(transit_end)),'Color',[0,0,1],'linewidth',1.0);
 
 title('state history'); xlabel('time [s]'); ylabel('stage');
 
 figure();
 plot(t_imu, allan_var,'k','linewidth',2);
 hold on;
-line([t_imu(stage_start);t_imu(stage_start)],repmat([0;1]*1e3,1,length(stage_start)),'Color',[1,0,1],'linewidth',1.0);
-line([t_imu(stage_end);t_imu(stage_end)],repmat([0;1]*1e3,1,length(stage_end)),'Color',[0,0,1],'linewidth',1.0);
+line([t_imu(transit_start);t_imu(transit_start)],repmat([0;1]*1e3,1,length(transit_start)),'Color',[1,0,1],'linewidth',1.0);
+line([t_imu(transit_end);t_imu(transit_end)],repmat([0;1]*1e3,1,length(transit_end)),'Color',[0,0,1],'linewidth',1.0);
 ylim([0,100]);
 xlabel('time [s]'); ylabel('Allan var. [m/s^2]'); title('Allan var. history of acc.');
 
@@ -159,13 +160,13 @@ for i=1:num_stage
 end
 
 % Iteratively calculate acc. parameter vector.
-theta = zeros(9,1); 
+theta = zeros(9,1);
 theta(:,1) = [0,0,0,1,1,1,0,0,0].';
 theta_save = [];
 residual_save = [];
 
 iter_count = 1;
-curr_residual = 0; 
+curr_residual = 0;
 prev_residual = 1e99;
 while(1)
     % Calculate residual (acc).
@@ -185,13 +186,13 @@ while(1)
     % Finish criterion
     curr_residual = norm(r_acc.^2);
     if(prev_residual - curr_residual <= 1e-10)
-       break; 
+        break;
     end
     prev_residual = curr_residual;
     
     % Increase the counter.
     iter_count = iter_count + 1;
-%     fprintf(' ACC iteration : %d\n', iter_count);
+    %     fprintf(' ACC iteration : %d\n', iter_count);
 end
 
 a_yz = theta(1);
@@ -204,6 +205,8 @@ bx = theta(7);
 by = theta(8);
 bz = theta(9);
 
+bias_a = [bx,by,bz].';
+
 figure();
 plot(residual_save); title('residual');
 
@@ -211,9 +214,10 @@ fprintf('Optimized values - a_yz: %0.3f, a_zy: %0.3f, a_zx: %0.3f, sx: %0.3f, sy
 
 Sa = diag([sx,sy,sz]);
 Ta = [1,-a_yz,a_zy;...
-      0,1,-a_zx;...
-      0,0,1];
-acc_avg_o = Ta*Sa*(acc_avg + [bx,by,bz].');
+    0,1,-a_zx;...
+    0,0,1];
+
+acc_avg_o = Ta*Sa*(acc_avg + bias_a);
 
 figure();
 plot3(acc_avg(1,:),acc_avg(2,:),acc_avg(3,:),'bo');
@@ -222,65 +226,103 @@ plot3(acc_avg_o(1,:),acc_avg_o(2,:),acc_avg_o(3,:),'r+');
 axis square;
 xlim([-1,1]*11); ylim([-1,1]*11); zlim([-1,1]*11); title('3d acc. plot');
 
-
 acc_o = Ta*Sa*(acc_imu + [bx,by,bz].');
 
 figure();
-subplot(3,1,1); 
-plot(t_imu, acc_imu(1,:),'k'); hold on; 
+subplot(3,1,1);
+plot(t_imu, acc_imu(1,:),'k'); hold on;
 plot(t_imu,acc_o(1,:),'r');
 ylabel('acc x [m/s^2]'); ylim([-1,1]*9.81*2);
-line([t_imu(stage_start);t_imu(stage_start)],repmat([-1;1]*1e3,1,length(stage_start)),'Color',[1,0,1],'linewidth',1.0);
-line([t_imu(stage_end);t_imu(stage_end)],repmat([-1;1]*1e3,1,length(stage_end)),'Color',[0,0,1],'linewidth',1.0);
-subplot(3,1,2); 
-plot(t_imu, acc_imu(2,:),'k'); hold on; 
+line([t_imu(transit_start);t_imu(transit_start)],repmat([-1;1]*1e3,1,length(transit_start)),'Color',[1,0,1],'linewidth',1.0);
+line([t_imu(transit_end);t_imu(transit_end)],repmat([-1;1]*1e3,1,length(transit_end)),'Color',[0,0,1],'linewidth',1.0);
+subplot(3,1,2);
+plot(t_imu, acc_imu(2,:),'k'); hold on;
 plot(t_imu,acc_o(2,:),'r');
 ylabel('acc y [m/s^2]'); ylim([-1,1]*9.81*2);
-line([t_imu(stage_start);t_imu(stage_start)],repmat([-1;1]*1e3,1,length(stage_start)),'Color',[1,0,1],'linewidth',1.0);
-line([t_imu(stage_end);t_imu(stage_end)],repmat([-1;1]*1e3,1,length(stage_end)),'Color',[0,0,1],'linewidth',1.0);
-subplot(3,1,3); 
-plot(t_imu, acc_imu(3,:),'k'); hold on; 
+line([t_imu(transit_start);t_imu(transit_start)],repmat([-1;1]*1e3,1,length(transit_start)),'Color',[1,0,1],'linewidth',1.0);
+line([t_imu(transit_end);t_imu(transit_end)],repmat([-1;1]*1e3,1,length(transit_end)),'Color',[0,0,1],'linewidth',1.0);
+subplot(3,1,3);
+plot(t_imu, acc_imu(3,:),'k'); hold on;
 plot(t_imu,acc_o(3,:),'r');
 ylabel('acc z [m/s^2]'); ylim([-1,1]*9.81*2);
-line([t_imu(stage_start);t_imu(stage_start)],repmat([-1;1]*1e3,1,length(stage_start)),'Color',[1,0,1],'linewidth',1.0);
-line([t_imu(stage_end);t_imu(stage_end)],repmat([-1;1]*1e3,1,length(stage_end)),'Color',[0,0,1],'linewidth',1.0);
+line([t_imu(transit_start);t_imu(transit_start)],repmat([-1;1]*1e3,1,length(transit_start)),'Color',[1,0,1],'linewidth',1.0);
+line([t_imu(transit_end);t_imu(transit_end)],repmat([-1;1]*1e3,1,length(transit_end)),'Color',[0,0,1],'linewidth',1.0);
 
 
 %% (4) Gyroscope scale, misalignment correction
-% Define a quaternion storage
-q_RK = zeros(4,length(t_imu));
-
-norm_q = zeros(1,length(t_imu));
-norm_q(1)=1;
-q_RK(:,1) = [1;0;0;0];
-
-% Runge-Kutta 4th order integration
-for i=1:length(t_imu)-1
-    dt = t_imu(i+1) - t_imu(i);
-    w_temp = w_imu(:,i) - b_g;
-    
-    k1 = quat_derivative_kch(q_RK(:,i),         w_temp);
-    k2 = quat_derivative_kch(q_RK(:,i)+k1*dt/2, w_temp);
-    k3 = quat_derivative_kch(q_RK(:,i)+k2*dt/2, w_temp);
-    k4 = quat_derivative_kch(q_RK(:,i)+k3*dt,   w_temp);
-    
-    q_RK(:,i+1) = q_RK(:,i) + dt/6*(k1 + 2*k2 + 2*k3 + k4);
-    q_RK(:,i+1) = q_RK(:,i+1)/norm(q_RK(:,i+1));
+% Nonimal vectors from calibrated accelerometer measurements.
+acc_avg_o = Ta*Sa*(acc_avg + bias_a);
+for i=1:num_stage
+    u_ref(:,i) = acc_avg_o(:,i) / norm(acc_avg_o(:,i));
 end
 
-% figure();
-% subplot(4,1,1); plot(t_imu, q_imu(1,:),'k'); hold on; plot(t_imu, q_int_RK(1,:),'r'); legend('truth','RK4'); ylim([-1.5,1.5]);
-% subplot(4,1,2); plot(t_imu, q_imu(2,:),'k'); hold on; plot(t_imu, q_int_RK(2,:),'r'); ylim([-1.5,1.5]);
-% subplot(4,1,3); plot(t_imu, q_imu(3,:),'k'); hold on; plot(t_imu, q_int_RK(3,:),'r'); ylim([-1.5,1.5]);
-% subplot(4,1,4); plot(t_imu, q_imu(4,:),'k'); hold on; plot(t_imu, q_int_RK(4,:),'r'); ylim([-1.5,1.5]);
+% Calculate rotation matrices between i-th and (i+1)-th stages by
+% Select relative rotations between stages.
+R_selected = cell(num_stage-1,1);
+for i = 1:num_stage-1
+    q_tmp = [1,0,0,0].';
+    for j = transit_start(i):transit_end(i)
+        dt = t_imu(j+1) - t_imu(j);
+        %         w_temp = diag([-1,-1,1])*w_unbiased(:,j);
+        w_tmp = w_unbiased(:,j);
+        
+        k1 = quat_derivative_kch(q_tmp,           w_tmp);
+        k2 = quat_derivative_kch(q_tmp + k1*dt/2, w_tmp);
+        k3 = quat_derivative_kch(q_tmp + k2*dt/2, w_tmp);
+        k4 = quat_derivative_kch(q_tmp + k3*dt,   w_tmp);
+        
+        q_tmp = q_tmp + dt/6*(k1 + 2*k2 + 2*k3 + k4);
+    end
+    
+    % Normalize the quaternion.
+    q_tmp = q_tmp/norm(q_tmp);
+    R_selected{i} = quat_to_dcm_kch(quat_inv_kch(q_tmp));
+end
 
-% %% Euler angle comparison
+% Rotate nominal vector
+u_integral = zeros(3,num_stage-1);
+u_diff     = zeros(1,num_stage-1);
+for i=1:num_stage-1
+    if(i==1)
+        u_integral(:,i) = u_ref(:,i);
+        u_integral(:,i+1) = R_selected{i}*u_ref(:,i);
+    else
+        u_integral(:,i+1) = R_selected{i}*u_ref(:,i);
+    end
+    u_diff(i) = norm(u_integral(:,i)-u_ref(:,i));
+end
+
+figure();
+plot(u_diff);
+
+
+%% (5) RK4 integration gyro ???
+
+% q_RK = zeros(4,length(t_imu));
 %
-% E_imu = quat_to_euler(q_imu);
-% E_int_RK = quat_to_euler(q_int_RK);
+% norm_q = zeros(1,length(t_imu));
+% norm_q(1)=1;
+% q_RK(:,1) = [1;0;0;0];
+%
+% % Runge-Kutta 4th order integration
+% for i=1:length(t_imu)-1
+%    dt = t_imu(i+1) - t_imu(i);
+%    w_tmp = diag([-1,-1,1])*w_unbiased(:,i); % WHY ?????????????????
+%
+%
+%    k1 = quat_derivative_kch(q_RK(:,i), w_tmp);
+%    k2 = quat_derivative_kch(q_RK(:,i)+k1*dt/2, w_tmp);
+%    k3 = quat_derivative_kch(q_RK(:,i)+k2*dt/2, w_tmp);
+%    k4 = quat_derivative_kch(q_RK(:,i)+k3*dt,   w_tmp);
+%
+%    q_RK(:,i+1) = q_RK(:,i) + dt/6*(k1 + 2*k2 + 2*k3 + k4);
+%
+%    q_RK(:,i+1) = q_RK(:,i+1)/norm(q_RK(:,i+1));
+% end
+%
 %
 % figure();
-% subplot(3,1,1);plot(t_imu, E_imu(1,:)/pi*180); hold on; plot(t_imu, E_int_RK(1,:)/pi*180); ylabel('\phi [deg]'); legend('imu','RK4'); ylim([-1,1]*180);
-% subplot(3,1,2);plot(t_imu, E_imu(2,:)/pi*180); hold on; plot(t_imu, E_int_RK(2,:)/pi*180); ylabel('\theta [deg]'); ylim([-1,1]*180);
-% subplot(3,1,3);plot(t_imu, E_imu(3,:)/pi*180); hold on; plot(t_imu, E_int_RK(3,:)/pi*180); ylabel('\psi [deg]');  ylim([-1,1]*180);
-%
+% subplot(4,1,1); plot(t_imu, q_imu(1,:),'k'); hold on; plot(t_imu, q_RK(1,:),'r'); grid on; grid minor; legend('truth','RK4'); ylim([-1.5,1.5]); title('quaternion dead-reckoning (Runge-Kutta 4th)');
+% subplot(4,1,2); plot(t_imu, q_imu(2,:),'k'); hold on; plot(t_imu, q_RK(2,:),'r'); grid on; grid minor; ylim([-1.5,1.5]);
+% subplot(4,1,3); plot(t_imu, q_imu(3,:),'k'); hold on; plot(t_imu, q_RK(3,:),'r'); grid on; grid minor; ylim([-1.5,1.5]);
+% subplot(4,1,4); plot(t_imu, q_imu(4,:),'k'); hold on; plot(t_imu, q_RK(4,:),'r'); grid on; grid minor; ylim([-1.5,1.5]);
