@@ -1,0 +1,318 @@
+close all;clear all;clc;
+addpath('geometry_library');
+%% IMU (accelerometer & gyroscope) calibration algorithm
+% Paper : D. Tedaldi et. al., "A Robust and Easy to Implement Method for IMU
+% Calibration without External Equipments," IEEE ICRA, Hong Kong, 2014.
+% Code author : Changhyeon Kim
+% Affiliation : Intelligent Control Systems Laboratory, Seoul National University, Seoul, South Korea.
+% Date        : 2018-08-30
+
+%%
+% Parameters
+global freq sig_a sig_w grav T_wait T_init
+freq  = 100;     % [Hz]
+sig_a = 1*1e-3;  % noise density of acclerometer.
+sig_w = 1*1e-3;  % noise density of gyroscope.
+grav  = 9.79871; % magnitude of gravitational acceleration [m/s^2] at SNU.
+% Actual nominal value : 9.80665
+
+T_wait = 2;    % T_wait (refered in the paper), [s];
+T_init = 4;      % T_init (refered in the paper), [s];
+
+% Import file ( All data must have a column vector form. )
+data = importdata('imu.txt');
+% data = importdata('../../save_exp/imu.txt');
+
+data.data(1,:) = [];
+
+t_imu = data.data(:,1).';       t_imu = t_imu - t_imu(1); acc_imu = data.data(:,2:4).';
+w_imu = data.data(:,5:7).';   mag_imu = data.data(:,8:10).';
+q_imu = data.data(:,11:14).'; q_imu = q_imu([2,3,4,1],:);
+
+q_imu_init = q_imu(:,1);
+
+% Derotate the IMU intrinsic AHRS output.
+for i = 1:length(q_imu)
+    q_imu(:,i) = quat_prod_kch(q_imu(:,i), quat_inv_kch(q_imu_init));
+end
+
+% Plot the time history
+figure();
+plot(t_imu(2:end)-t_imu(1:end-1),'.'); xlabel('seq'); ylabel('time [s]'); title('frequency history');
+fprintf('time mean : %0.3f [ms], std : %0.3f [ms]\n',mean(t_imu(2:end)-t_imu(1:end-1))*1e3, std(t_imu(2:end)-t_imu(1:end-1))*1e3);
+
+%% (1) Gyro bias correction
+num_avg = floor(T_init*freq);
+b_g = [mean(w_imu(1,1:num_avg)),mean(w_imu(2,1:num_avg)),mean(w_imu(3,1:num_avg))].';
+fprintf('Gyro bias b_g : %0.3f [rad/s], %0.3f [rad/s], %0.3f [rad/s]\n',b_g(1), b_g(2), b_g(3));
+
+figure();
+subplot(3,1,1); plot(t_imu, w_imu(1,:)-b_g(1,1)); hold on; line([1,1]*T_init,[-1,1]*100,'color',[1,0,1],'linewidth',1.5); ylabel('w_x [rad/s]'); ylim([-1,1]*5); legend('data','T_i_n_i_t'); title('Gyro bias corrected');
+subplot(3,1,2); plot(t_imu, w_imu(2,:)-b_g(2,1)); hold on; line([1,1]*T_init,[-1,1]*100,'color',[1,0,1],'linewidth',1.5);ylabel('w_y [rad/s]'); ylim([-1,1]*5);
+subplot(3,1,3); plot(t_imu, w_imu(3,:)-b_g(3,1)); hold on; line([1,1]*T_init,[-1,1]*100,'color',[1,0,1],'linewidth',1.5);ylabel('w_z [rad/s]'); xlabel('time [s]'); ylim([-1,1]*5);
+
+%% (2) Find distinct stationary stages by using Allan variance of acceleration.
+num_allan_half = floor(T_wait*freq/2);
+num_allan = 2*num_allan_half + 1;
+len_total = length(t_imu);
+
+for i = 1:len_total
+    if(i < num_allan_half + 1)
+        var_x = var( acc_imu(1,1:i+num_allan_half) );
+        var_y = var( acc_imu(2,1:i+num_allan_half) );
+        var_z = var( acc_imu(3,1:i+num_allan_half) );
+        
+        allan_var(i) =  sqrt( var_x^2 + var_y^2 + var_z^2);
+    elseif(i < len_total - num_allan_half)
+        var_x = var( acc_imu(1,i-num_allan_half:i+num_allan_half) );
+        var_y = var( acc_imu(2,i-num_allan_half:i+num_allan_half) );
+        var_z = var( acc_imu(3,i-num_allan_half:i+num_allan_half) );
+        
+        allan_var(i) = sqrt( var_x^2 + var_y^2 + var_z^2);
+    else
+        allan_var(i) = allan_var(len_total - num_allan_half-1);
+    end
+    if(rem(i,floor(len_total/10)) == 1)
+        fprintf('  Allan variance calculations : %0.2f [percents]\n',i/len_total*100);
+    elseif(i==len_total)
+        fprintf('  DONE, Allan variance calculations : %0.2f [percents]\n',i/len_total*100);
+    end
+end
+
+% Difference of Allan variance to find the rising edge of the Allan
+% variance time history.
+for i=1:len_total
+    if(i == len_total)
+        diff_allan_var(i) = diff_allan_var(i-1);
+    else
+        diff_allan_var(i) = (allan_var(i+1) - allan_var(i));%/(t_imu(i+1) - t_imu(i));
+    end
+end
+
+% Find flat (stationary) regions.
+rising_flag  = false;
+count_stage    = 1;      % indicator for noting an each stage.
+allan_thres  = 0.1;    % threshold value for Allan variance.
+stage_start  = [];     % storage for saving the start index of each stage.
+stage_end    = [];     % storage for saving the end index of each stage.
+
+stage_vec = zeros(len_total,1);
+
+for i=1:len_total
+    allan_tmp = allan_var(i);
+    if(rising_flag == false && allan_tmp >= allan_thres)
+        rising_flag = true;
+        count_stage = count_stage + 1;
+        stage_start = [stage_start, i];
+    end
+    if(rising_flag == true && allan_tmp < allan_thres) %transition part end
+        rising_flag = false;
+        stage_end   = [stage_end, i];
+    end
+    if(rising_flag == true)
+        stage_vec(i)= count_stage - 0.5;
+    else
+        stage_vec(i)= count_stage;
+    end
+end
+figure();
+plot(t_imu,stage_vec,'k+');ylim([0,max(stage_vec)+1]);
+hold on;
+line([t_imu(stage_start);t_imu(stage_start)],repmat([0;1]*1e3,1,length(stage_start)),'Color',[1,0,1],'linewidth',1.0);
+line([t_imu(stage_end);t_imu(stage_end)],repmat([0;1]*1e3,1,length(stage_end)),'Color',[0,0,1],'linewidth',1.0);
+
+title('state history'); xlabel('time [s]'); ylabel('stage');
+
+figure();
+plot(t_imu, allan_var,'k','linewidth',2);
+hold on;
+line([t_imu(stage_start);t_imu(stage_start)],repmat([0;1]*1e3,1,length(stage_start)),'Color',[1,0,1],'linewidth',1.0);
+line([t_imu(stage_end);t_imu(stage_end)],repmat([0;1]*1e3,1,length(stage_end)),'Color',[0,0,1],'linewidth',1.0);
+ylim([0,100]);
+xlabel('time [s]'); ylabel('Allan var. [m/s^2]'); title('Allan var. history of acc.');
+
+% Extract each stage.
+num_stage = floor(stage_vec(end));
+
+acc_stage = cell(num_stage,1);
+t_stage   = cell(num_stage,1);
+w_trans   = cell(num_stage-1,1);
+t_trans   = cell(num_stage-1,1);
+
+for i=1:len_total
+    if( rem(stage_vec(i),1) == 0) % extract stationary parts
+        acc_stage{stage_vec(i)} = [acc_stage{stage_vec(i)}, acc_imu(:,i)];
+        t_stage{stage_vec(i)}   = [t_stage{stage_vec(i)}, t_imu(i)];
+    else % extract transition parts
+        w_trans{stage_vec(i)-0.5} = [w_trans{stage_vec(i)-0.5},w_imu(:,i)];
+        t_trans{stage_vec(i)-0.5}   = [t_trans{stage_vec(i)-0.5}, t_imu(i)];
+    end
+end
+
+%% (3) Acceleration scale, misalignment and bias correction
+% Average accelerometer values on each stationary stage.
+% TODO: fault (movement) detector.
+for i=1:num_stage
+    acc_avg(:,i) = mean(acc_stage{i}.').';
+end
+
+% Iteratively calculate acc. parameter vector.
+theta = zeros(9,1); 
+theta(:,1) = [0,0,0,1,1,1,0,0,0].';
+theta_save = [];
+residual_save = [];
+
+iter_count = 1;
+curr_residual = 0; 
+prev_residual = 1e30;
+while(1)
+    % Calculate residual (acc).
+    r_acc = calc_residual_acc(acc_avg,theta);
+    
+    % Calculate Jacobian (acc).
+    J_acc = calc_Jacobian_acc(acc_avg, theta);
+    
+    % Update the parameter vector, theta.
+    d_theta = -0.5*(J_acc.'*J_acc)^-1*J_acc.'*r_acc;
+    theta = theta + d_theta;
+    
+    % Save the parameter and residual histories.
+    theta_save = [theta_save,theta];
+    residual_save = [residual_save,norm(r_acc)];
+    
+    % Finish criterion
+    curr_residual = norm(r_acc.^2);
+    if(prev_residual - curr_residual <= 1e-10)
+       break; 
+    end
+    prev_residual = curr_residual;
+    
+    % Increase the counter.
+    iter_count = iter_count + 1;
+    fprintf(' ACC iteration : %d\n', iter_count);
+end
+
+theta
+figure();
+plot(residual_save); title('residual');
+
+
+a_yz = theta(1);
+a_zy = theta(2);
+a_zx = theta(3);
+sx = theta(4);
+sy = theta(5);
+sz = theta(6);
+bx = theta(7);
+by = theta(8);
+bz = theta(9);
+
+Sa = diag([sx,sy,sz]);
+Ta = [1,-a_yz,a_zy;0,1,-a_zx;0,0,1];
+acc_avg_o = Ta*Sa*(acc_avg+[bx,by,bz].');
+
+for i=1:num_stage
+   grav-norm(acc_avg_o(:,i))
+end
+
+
+figure();
+plot3(acc_avg(1,:),acc_avg(2,:),acc_avg(3,:),'bo');
+grid on; hold on;
+plot3(acc_avg_o(1,:),acc_avg_o(2,:),acc_avg_o(3,:),'r+');
+axis square;
+xlim([-1,1]*11); ylim([-1,1]*11); zlim([-1,1]*11);
+
+
+acc_o = Ta*Sa*(acc_imu+[bx,by,bz].');
+
+figure();
+subplot(3,1,1); plot(t_imu, acc_imu(1,:),'k'); hold on; 
+plot(t_imu,acc_o(1,:),'r');
+ylabel('acc x [m/s^2]'); ylim([-1,1]*9.81*2);
+line([t_imu(stage_start);t_imu(stage_start)],repmat([-1;1]*1e3,1,length(stage_start)),'Color',[1,0,1],'linewidth',1.0);
+line([t_imu(stage_end);t_imu(stage_end)],repmat([-1;1]*1e3,1,length(stage_end)),'Color',[0,0,1],'linewidth',1.0);
+
+subplot(3,1,2); plot(t_imu, acc_imu(2,:),'k'); ylabel('acc y [m/s^2]'); ylim([-1,1]*9.81*2);
+line([t_imu(stage_start);t_imu(stage_start)],repmat([-1;1]*1e3,1,length(stage_start)),'Color',[1,0,1],'linewidth',1.0);
+line([t_imu(stage_end);t_imu(stage_end)],repmat([-1;1]*1e3,1,length(stage_end)),'Color',[0,0,1],'linewidth',1.0);
+
+subplot(3,1,3); plot(t_imu, acc_imu(3,:),'k'); ylabel('acc z [m/s^2]'); ylim([-1,1]*9.81*2);
+line([t_imu(stage_start);t_imu(stage_start)],repmat([-1;1]*1e3,1,length(stage_start)),'Color',[1,0,1],'linewidth',1.0);
+line([t_imu(stage_end);t_imu(stage_end)],repmat([-1;1]*1e3,1,length(stage_end)),'Color',[0,0,1],'linewidth',1.0);
+
+
+
+
+
+
+
+
+%% (4) Gyroscope scale, misalignment correction
+%% Integration
+% Define a quaternion storage
+q_RK = zeros(4,length(t_imu));
+
+norm_q = zeros(1,length(t_imu));
+norm_q(1)=1;
+q_RK(:,1) = [1;0;0;0];
+
+% Runge-Kutta 4th order integration
+for i=1:length(t_imu)-1
+    dt = t_imu(i+1) - t_imu(i);
+    w_temp = w_imu(:,i) - b_g;
+    
+    k1 = quat_derivative_kch(q_RK(:,i),         w_temp);
+    k2 = quat_derivative_kch(q_RK(:,i)+k1*dt/2, w_temp);
+    k3 = quat_derivative_kch(q_RK(:,i)+k2*dt/2, w_temp);
+    k4 = quat_derivative_kch(q_RK(:,i)+k3*dt,   w_temp);
+    
+    q_RK(:,i+1) = q_RK(:,i) + dt/6*(k1 + 2*k2 + 2*k3 + k4);
+    q_RK(:,i+1) = q_RK(:,i+1)/norm(q_RK(:,i+1));
+end
+
+%% Accelerometer
+figure();
+subplot(3,1,1); plot(t_imu, acc_imu(1,:)); ylabel('acc x [m/s^2]'); ylim([-1,1]*9.81*2);
+subplot(3,1,2); plot(t_imu, acc_imu(2,:)); ylabel('acc y [m/s^2]'); ylim([-1,1]*9.81*2);
+subplot(3,1,3); plot(t_imu, acc_imu(3,:)); ylabel('acc z [m/s^2]'); ylim([-1,1]*9.81*2);
+
+% fprintf('acc x-m: %0.4f, std: %0.4f // y-m: %0.4f, std: %0.4f // z-m: %0.4f, std: %0.4f\n',mean(acc_imu(:,1)),std(acc_imu(:,1)),mean(acc_imu(:,2)),std(acc_imu(:,2)),mean(acc_imu(:,3)),std(acc_imu(:,3)));
+
+%% Integration
+q_RK = zeros(4,length(t_imu));
+
+norm_q = zeros(1,length(t_imu));
+norm_q(1)=1;
+q_RK(:,1) = [1;0;0;0];
+
+% Runge-Kutta 4th order integration
+for i=1:length(t_imu)-1
+    dt = t_imu(i+1) - t_imu(i);
+    w_temp = w_imu(:,i) - b_g;
+    
+    k1 = quat_derivative_kch(q_RK(:,i),           w_temp);
+    k2 = quat_derivative_kch(q_RK(:,i) + k1*dt/2, w_temp);
+    k3 = quat_derivative_kch(q_RK(:,i) + k2*dt/2, w_temp);
+    k4 = quat_derivative_kch(q_RK(:,i) + k3*dt,   w_temp);
+    
+    q_RK(:,i+1) = q_RK(:,i) + dt/6*(k1 + 2*k2 + 2*k3 + k4);
+    q_RK(:,i+1) = q_RK(:,i+1)/norm(q_RK(:,i+1));
+end
+
+% figure();
+% subplot(4,1,1); plot(t_imu, q_imu(1,:),'k'); hold on; plot(t_imu, q_int_RK(1,:),'r'); legend('truth','RK4'); ylim([-1.5,1.5]);
+% subplot(4,1,2); plot(t_imu, q_imu(2,:),'k'); hold on; plot(t_imu, q_int_RK(2,:),'r'); ylim([-1.5,1.5]);
+% subplot(4,1,3); plot(t_imu, q_imu(3,:),'k'); hold on; plot(t_imu, q_int_RK(3,:),'r'); ylim([-1.5,1.5]);
+% subplot(4,1,4); plot(t_imu, q_imu(4,:),'k'); hold on; plot(t_imu, q_int_RK(4,:),'r'); ylim([-1.5,1.5]);
+
+% %% Euler angle comparison
+%
+% E_imu = quat_to_euler(q_imu);
+% E_int_RK = quat_to_euler(q_int_RK);
+%
+% figure();
+% subplot(3,1,1);plot(t_imu, E_imu(1,:)/pi*180); hold on; plot(t_imu, E_int_RK(1,:)/pi*180); ylabel('\phi [deg]'); legend('imu','RK4'); ylim([-1,1]*180);
+% subplot(3,1,2);plot(t_imu, E_imu(2,:)/pi*180); hold on; plot(t_imu, E_int_RK(2,:)/pi*180); ylabel('\theta [deg]'); ylim([-1,1]*180);
+% subplot(3,1,3);plot(t_imu, E_imu(3,:)/pi*180); hold on; plot(t_imu, E_int_RK(3,:)/pi*180); ylabel('\psi [deg]');  ylim([-1,1]*180);
+%
